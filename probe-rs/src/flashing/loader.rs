@@ -527,6 +527,7 @@ impl FlashLoader {
                 do_use_double_buffering,
                 options.skip_erase || did_chip_erase,
                 options.verify,
+                options.incremental,
             )?;
         }
 

@@ -200,6 +200,8 @@ impl From<flashing::ProgressOperation> for Operation {
             flashing::ProgressOperation::Erase => Operation::Erase,
             flashing::ProgressOperation::Program => Operation::Program,
             flashing::ProgressOperation::Verify => Operation::Verify,
+            flashing::ProgressOperation::Crc32Verify => Operation::Verify,
+            flashing::ProgressOperation::IncrementalProgram => Operation::Program,
         }
     }
 }

@@ -221,6 +221,9 @@ pub struct DownloadOptions<'p> {
     pub verify: bool,
     /// Disable double buffering when loading flash.
     pub disable_double_buffering: bool,
+    /// Enable incremental programming that only updates sectors that have changed.
+    /// This uses on-target CRC32 calculation to verify which sectors need updating.
+    pub incremental: bool,
 }
 
 impl DownloadOptions<'_> {
