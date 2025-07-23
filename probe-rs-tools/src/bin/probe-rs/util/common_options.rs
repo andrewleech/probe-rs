@@ -38,6 +38,10 @@ pub struct BinaryDownloadOptions {
     /// After flashing, read back all the flashed data to verify it has been written correctly.
     #[arg(long, help_heading = "DOWNLOAD CONFIGURATION")]
     pub verify: bool,
+    /// Enable incremental programming that only updates sectors that have changed.
+    /// This uses on-target CRC32 calculation to verify which sectors need updating.
+    #[arg(short = 'i', long, help_heading = "DOWNLOAD CONFIGURATION")]
+    pub incremental: bool,
 }
 
 /// Supported bit-widths for read/write commands (not every device may support each width).

@@ -36,6 +36,7 @@ pub fn run_flash_download(
     options.disable_double_buffering = download_options.disable_double_buffering;
     options.verify = download_options.verify;
     options.preverify = download_options.preverify;
+    options.incremental = download_options.incremental;
 
     let flash_layout_output_path = download_options.flash_layout_output_path.clone();
 
