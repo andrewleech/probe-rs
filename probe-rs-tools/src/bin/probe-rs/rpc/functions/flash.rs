@@ -38,6 +38,10 @@ pub struct DownloadOptions {
     pub verify: bool,
     /// Disable double buffering when loading flash.
     pub disable_double_buffering: bool,
+    /// Before flashing, read back the flash contents to skip up-to-date regions.
+    pub preverify: bool,
+    /// Enable incremental programming that only updates sectors that have changed.
+    pub incremental: bool,
 }
 
 #[derive(Serialize, Deserialize, Schema)]
@@ -82,11 +86,12 @@ impl FlashRequest {
         let mut options = probe_rs::flashing::DownloadOptions::default();
 
         options.keep_unwritten_bytes = self.options.keep_unwritten_bytes;
-        options.do_chip_erase = self.options.do_chip_erase;
+        options.do_chip_erase = self.options.do_chip_erase && !self.options.incremental; // Disable chip erase in incremental mode
         options.skip_erase = self.options.skip_erase;
-        options.preverify = false;
+        options.preverify = self.options.preverify;
         options.verify = self.options.verify;
         options.disable_double_buffering = self.options.disable_double_buffering;
+        options.incremental = self.options.incremental;
 
         options
     }

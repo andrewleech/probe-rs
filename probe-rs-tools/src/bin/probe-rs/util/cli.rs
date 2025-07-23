@@ -303,10 +303,12 @@ pub async fn flash(
 
     let options = DownloadOptions {
         keep_unwritten_bytes: download_options.restore_unwritten,
-        do_chip_erase: chip_erase,
+        do_chip_erase: chip_erase && !download_options.incremental, // Disable chip erase in incremental mode
         skip_erase: false,
         verify: download_options.verify,
         disable_double_buffering: download_options.disable_double_buffering,
+        preverify: download_options.preverify,
+        incremental: download_options.incremental,
     };
 
     let loader = session
