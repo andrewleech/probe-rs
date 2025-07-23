@@ -1,0 +1,117 @@
+
+Discarded input sections
+
+ .text          0x00000000        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .data          0x00000000        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .bss           0x00000000        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .text.hot.crc32_slice4_balanced
+                0x00000000      0x41c /tmp/ccctUMgY.ltrans0.ltrans.o
+ .comment       0x00000000       0x27 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .ARM.attributes
+                0x00000000       0x2a /tmp/ccctUMgY.ltrans0.ltrans.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+RAM              0x00000000         0x00002000
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+LOAD crc32_slice4_m0plus.o
+LOAD /tmp/ccctUMgY.ltrans0.ltrans.o
+
+.text           0x00000000     0x1640
+                0x00000000        0x4 LONG 0xbe00be00
+ *(.text.init_crc32)
+ .text.init_crc32
+                0x00000004        0x4 /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x00000004                init_crc32
+ *(.text.uninit_crc32)
+ .text.uninit_crc32
+                0x00000008        0x4 /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x00000008                uninit_crc32
+ *(.text.calculate_crc32)
+ .text.calculate_crc32
+                0x0000000c        0x8 /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x0000000c                calculate_crc32
+ *(.text.sector_crc32)
+ .text.sector_crc32
+                0x00000014        0xc /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x00000014                sector_crc32
+ *(.text*)
+ .text.hot.crc32_slice4_fast
+                0x00000020      0x618 /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x00000020                crc32_slice4_fast
+ *(.rodata*)
+ *fill*         0x00000638        0x8 
+ .rodata.crc32_table1
+                0x00000640      0x400 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .rodata.crc32_table2
+                0x00000a40      0x400 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .rodata.crc32_table3
+                0x00000e40      0x400 /tmp/ccctUMgY.ltrans0.ltrans.o
+ .rodata.crc32_table0
+                0x00001240      0x400 /tmp/ccctUMgY.ltrans0.ltrans.o
+                0x00001640                        . = ALIGN (0x4)
+
+.glue_7         0x00001640        0x0
+ .glue_7        0x00001640        0x0 linker stubs
+
+.glue_7t        0x00001640        0x0
+ .glue_7t       0x00001640        0x0 linker stubs
+
+.vfp11_veneer   0x00001640        0x0
+ .vfp11_veneer  0x00001640        0x0 linker stubs
+
+.v4_bx          0x00001640        0x0
+ .v4_bx         0x00001640        0x0 linker stubs
+
+.iplt           0x00001640        0x0
+ .iplt          0x00001640        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+
+.rel.dyn        0x00001640        0x0
+ .rel.iplt      0x00001640        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+
+.data           0x00001640        0x0
+ *(.data*)
+                0x00001640                        . = ALIGN (0x4)
+
+.igot.plt       0x00001640        0x0
+ .igot.plt      0x00001640        0x0 /tmp/ccctUMgY.ltrans0.ltrans.o
+
+.bss            0x00001640        0x0
+ *(.bss*)
+ *(COMMON)
+                0x00001640                        . = ALIGN (0x4)
+
+.debug_info
+ *(.debug_info)
+
+.debug_abbrev
+ *(.debug_abbrev)
+
+.debug_line
+ *(.debug_line)
+
+.debug_frame
+ *(.debug_frame)
+
+.debug_str
+ *(.debug_str)
+
+.debug_ranges
+ *(.debug_ranges)
+
+/DISCARD/
+ *(.ARM.exidx*)
+ *(.ARM.attributes*)
+ *(.comment)
+ *(.note*)
+                [!provide]                        PROVIDE (pc_init_offset = (ADDR (.text) + 0x4))
+                [!provide]                        PROVIDE (pc_uninit_offset = (ADDR (.text) + 0x8))
+                [!provide]                        PROVIDE (pc_crc32_offset = (ADDR (.text) + 0xc))
+                [!provide]                        PROVIDE (pc_sector_crc32_offset = (ADDR (.text) + 0x10))
+                [!provide]                        PROVIDE (blob_size = ((SIZEOF (.text) + SIZEOF (.rodata)) + SIZEOF (.data)))
+OUTPUT(crc32_slice4_m0plus.elf elf32-littlearm)
+LOAD linker stubs

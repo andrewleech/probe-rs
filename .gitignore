@@ -8,3 +8,10 @@
 .vscode/settings.json
 .idea/
 .zed/
+
+# Large binary artifacts (except embedded algorithm blobs)
+*.uf2
+firmware.elf
+/crc32-test/
+/crc32-integration/
+*.py

@@ -1,0 +1,19 @@
+CRC32 Algorithm Build Log - Thu Jul 24 05:36:57 AM AEST 2025
+
+📊 RISC-V CRC32 Algorithm Analysis
+==================================
+Target ISA: rv32i
+ABI: ilp32
+
+Binary size:
+   text	   data	    bss	    dec	    hex	filename
+   5464	      0	      0	   5464	   1558	crc32.elf
+
+Binary blob: 5.4K (5472 bytes)
+
+Entry points:
+00000014 T init_crc32
+0000001c T uninit_crc32
+00000024 T calculate_crc32
+0000054c T sector_crc32
+
