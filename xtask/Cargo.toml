@@ -16,7 +16,7 @@ sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 glob = "0.3"
-probe-rs-crc32-builder = { path = "../crc32_algorithms" }
+probe-rs-crc32-builder = { path = "../crc32_algorithms", default-features = false }
 
 [lints]
 workspace = true

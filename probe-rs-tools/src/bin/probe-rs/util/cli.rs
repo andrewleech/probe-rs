@@ -310,8 +310,11 @@ pub async fn flash(
         disable_double_buffering: download_options.disable_double_buffering,
         preverify: download_options.preverify,
     };
-    tracing::debug!("CLI flash() creating DownloadOptions with preverify={}, verify={}", 
-                   download_options.preverify, download_options.verify);
+    tracing::debug!(
+        "CLI flash() creating DownloadOptions with preverify={}, verify={}",
+        download_options.preverify,
+        download_options.verify
+    );
 
     let loader = session
         .build_flash_loader(path.to_path_buf(), format)
@@ -320,7 +323,10 @@ pub async fn flash(
     let mut flash_layout = None;
 
     // Enhanced preverify: always use flash path, let FlashLoader::commit() handle preverify logic
-    tracing::debug!("CLI using unified flash path with preverify={}", download_options.preverify);
+    tracing::debug!(
+        "CLI using unified flash path with preverify={}",
+        download_options.preverify
+    );
     let pb: Option<CliProgressBars> = if download_options.disable_progressbars {
         None
     } else {
@@ -328,23 +334,23 @@ pub async fn flash(
     };
     tracing::debug!("CLI calling session.flash() with enhanced preverify support");
     session
-            .flash(
-                options,
-                loader.loader,
-                rtt_client.as_ref().map(|c| c.handle),
-                async |event| {
-                    if let ProgressEvent::FlashLayoutReady {
-                        flash_layout: layout,
-                    } = &event
-                    {
-                        flash_layout = Some(layout.clone());
-                    }
-                    if let Some(ref pb) = pb {
-                        pb.handle(event);
-                    }
-                },
-            )
-            .await?;
+        .flash(
+            options,
+            loader.loader,
+            rtt_client.as_ref().map(|c| c.handle),
+            async |event| {
+                if let ProgressEvent::FlashLayoutReady {
+                    flash_layout: layout,
+                } = &event
+                {
+                    flash_layout = Some(layout.clone());
+                }
+                if let Some(ref pb) = pb {
+                    pb.handle(event);
+                }
+            },
+        )
+        .await?;
     tracing::debug!("CLI session.flash() completed");
 
     // Visualise flash layout to file if requested.
@@ -364,10 +370,10 @@ pub async fn flash(
     if pb.is_some() {
         tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
     }
-    
+
     // Explicitly drop progress bars after they've completed but before showing finished message
     drop(pb);
-    
+
     logging::eprintln(format!(
         "     {} in {:.02}s",
         "Finished".green().bold(),

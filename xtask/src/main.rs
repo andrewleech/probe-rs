@@ -723,9 +723,10 @@ fn check_dependencies(sh: &Shell, arm_only: bool, force: bool) -> Result<()> {
         missing_tools.push("ARM toolchain (arm-none-eabi-objcopy)");
     }
 
-    if !arm_only && cmd!(sh, "riscv64-unknown-elf-objcopy --version")
-        .run()
-        .is_err()
+    if !arm_only
+        && cmd!(sh, "riscv64-unknown-elf-objcopy --version")
+            .run()
+            .is_err()
     {
         missing_tools.push("RISC-V toolchain (riscv64-unknown-elf-objcopy)");
     }
@@ -1174,8 +1175,7 @@ fn clean_crc32() -> Result<()> {
             let path = entry.path();
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                 // Check if it's a CRC binary or metadata file
-                let is_target_file = (filename.ends_with(".bin")
-                    || filename.ends_with(".toml"))
+                let is_target_file = (filename.ends_with(".bin") || filename.ends_with(".toml"))
                     && (filename.starts_with("thumbv6m-none-eabi")
                         || filename.starts_with("riscv32"));
 

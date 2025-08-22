@@ -109,7 +109,6 @@ impl<'a> FlashProgress<'a> {
         self.started(ProgressOperation::Crc32Verify);
     }
 
-
     /// Signal that the sector erasing procedure has made progress.
     pub(super) fn sector_erased(&self, size: u64, time: Duration) {
         self.progressed(ProgressOperation::Erase, size, time);
@@ -135,8 +134,6 @@ impl<'a> FlashProgress<'a> {
         self.progressed(ProgressOperation::Crc32Verify, size, time);
     }
 
-
-
     /// Signal that the erasing procedure failed.
     pub(super) fn failed_erasing(&self) {
         self.failed(ProgressOperation::Erase);
@@ -156,7 +153,6 @@ impl<'a> FlashProgress<'a> {
     pub(super) fn failed_verifying(&self) {
         self.failed(ProgressOperation::Verify);
     }
-
 
     /// Signal that the programming procedure completed successfully.
     pub(super) fn finished_programming(&self) {
@@ -182,7 +178,6 @@ impl<'a> FlashProgress<'a> {
     pub(super) fn finished_crc32_verifying(&self) {
         self.finished(ProgressOperation::Crc32Verify);
     }
-
 }
 
 /// The operation that is currently in progress.

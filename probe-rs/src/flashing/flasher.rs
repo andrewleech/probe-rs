@@ -179,9 +179,22 @@ impl Flasher {
     }
 
     /// Check if target architecture supports CRC32 verification
-    fn target_supports_crc32(target: &Target) -> bool {
-        // Currently only ARM targets support CRC32
-        matches!(target.architecture(), crate::core::Architecture::Arm)
+    pub fn target_supports_crc32(target: &Target) -> bool {
+        // ARM and RISC-V targets support CRC32
+        match target.architecture() {
+            crate::core::Architecture::Arm | crate::core::Architecture::Riscv => {
+                tracing::debug!("Target {} ({:?}) supports CRC32 verification", target.name, target.architecture());
+                true
+            }
+            _ => {
+                tracing::debug!(
+                    "Target {} ({:?}) does not support CRC32, falling back to traditional verification",
+                    target.name, 
+                    target.architecture()
+                );
+                false
+            }
+        }
     }
 
     /// Check if CRC32 is supported by this flash algorithm
@@ -282,36 +295,8 @@ impl Flasher {
 
         tracing::debug!("RAM contents match flashing algo blob.");
 
-        // Load CRC32 binary immediately after flash algorithm if available (consolidated loading)
-        if let Some((crc32_binary, crc32_address, crc32_size)) = &algo.crc32_binary {
-            tracing::info!(
-                "Loading CRC32 binary ({} bytes) to RAM at 0x{:08x} (consolidated with flash algorithm loading)",
-                crc32_size,
-                crc32_address
-            );
-            core.write(*crc32_address, crc32_binary)
-                .map_err(FlashError::Core)?;
-
-            // Verify CRC32 binary was loaded correctly
-            let mut readback = vec![0u8; crc32_binary.len()];
-            core.read(*crc32_address, &mut readback)
-                .map_err(FlashError::Core)?;
-            if readback == *crc32_binary {
-                tracing::info!(
-                    "CRC32 binary loaded and verified successfully at 0x{:08x}",
-                    crc32_address
-                );
-            } else {
-                tracing::error!(
-                    "CRC32 binary verification failed at 0x{:08x}",
-                    crc32_address
-                );
-                return Err(FlashError::Core(crate::Error::Other(
-                    "CRC32 binary loading verification failed".to_string(),
-                )));
-            }
-        } else if algo.pc_crc32.is_some() {
-            // CRC32 defined in original algorithm - no separate loading needed
+        // CRC32 is now integrated into the main flash algorithm instructions (if supported)
+        if algo.pc_crc32.is_some() {
             tracing::info!(
                 "CRC32 algorithm available at 0x{:08x} (integrated in flash algorithm)",
                 algo.pc_crc32.unwrap()
@@ -320,7 +305,7 @@ impl Flasher {
             tracing::debug!("CRC32 not available for this target/algorithm");
         }
 
-        // Drop the core borrow before trying to load CRC32
+        // Drop the core borrow
         drop(core);
 
         Ok(())
@@ -1349,31 +1334,13 @@ impl<O: Operation> ActiveFlasher<'_, '_, O> {
             .map_err(FlashError::Core)?;
 
         // Set up stack pointer for function execution
-        // CRITICAL: The flash algorithm allocates CRC32 at stack_top, causing collision
-        // We need to set stack pointer ABOVE the CRC32 binary to prevent stack overflow
+        // CRC32 is now integrated into the main flash algorithm instructions, so no separate allocation
         let algo = &self.flash_algorithm;
-        let stack_pointer = if let Some((_, crc32_address, crc32_size)) = &algo.crc32_binary {
-            let crc32_end = crc32_address + crc32_size + 64; // CRC32 end + 64 byte gap
-            let safe_stack = std::cmp::max(algo.stack_top, crc32_end);
-            tracing::info!(
-                "🧠 MEMORY-LAYOUT: Stack=0x{:08x}, CRC32=0x{:08x}-0x{:08x}, Gap=64 bytes",
-                safe_stack,
-                crc32_address,
-                crc32_address + crc32_size
-            );
-            tracing::info!(
-                "🧠 STACK-SAFETY: Stack collision avoided, stack moved from 0x{:08x} to 0x{:08x}",
-                algo.stack_top,
-                safe_stack
-            );
-            safe_stack
-        } else {
-            tracing::info!(
-                "🧠 MEMORY-LAYOUT: No CRC32 binary allocated, stack at original 0x{:08x}",
-                algo.stack_top
-            );
-            algo.stack_top
-        };
+        let stack_pointer = algo.stack_top;
+        tracing::debug!(
+            "🧠 MEMORY-LAYOUT: Using original stack pointer 0x{:08x} (CRC32 integrated in instructions)",
+            stack_pointer
+        );
 
         self.core
             .write_core_reg(self.core.stack_pointer(), stack_pointer)
@@ -1421,29 +1388,16 @@ impl<O: Operation> ActiveFlasher<'_, '_, O> {
         Ok(buffer)
     }
 
-    /// Load CRC32 binary to separate RAM region for reading operations
-    /// This loads the CRC32 function for target-side execution like work-rp-4
+    /// Prepare CRC32 for reading operations
+    /// CRC32 is now integrated into the main flash algorithm instructions, so no separate loading is needed
     fn load_crc32_for_reading(&mut self) -> Result<(), FlashError> {
-        // Check if CRC32 binary is available in flash algorithm
-        if let Some((crc32_binary, crc32_address, crc32_size)) = &self.flash_algorithm.crc32_binary
-        {
+        if self.flash_algorithm.pc_crc32.is_some() {
             tracing::info!(
-                "🔍 CRC32-READ: Loading CRC32 binary ({} bytes) to RAM at 0x{:08x} for target execution",
-                crc32_size,
-                crc32_address
-            );
-
-            // Write CRC32 binary to allocated RAM region
-            self.core
-                .write(*crc32_address, crc32_binary)
-                .map_err(FlashError::Core)?;
-
-            tracing::info!(
-                "🔍 CRC32-READ: CRC32 algorithm loaded successfully at 0x{:08x} (target-side)",
-                crc32_address
+                "🔍 CRC32-READ: CRC32 algorithm ready at 0x{:08x} (integrated in flash algorithm)",
+                self.flash_algorithm.pc_crc32.unwrap()
             );
         } else {
-            tracing::warn!("🔍 CRC32-READ: No CRC32 binary allocated for reading mode");
+            tracing::debug!("🔍 CRC32-READ: No CRC32 support available for this target");
         }
 
         Ok(())
@@ -2418,30 +2372,27 @@ mod tests {
 
     /// Test CRC32C algorithm consistency - documents current behavior
     ///
-    /// CRITICAL BUG DETECTED: Host and embedded CRC32C implementations have different
-    /// initialization/finalization, causing verification failures.
+    /// Test CRC32_BZIP2 algorithm consistency between host and embedded implementations.
     ///
-    /// Host (crcxx CRC_32_ISCSI): Standard CRC32C with normal init/final XOR
-    /// Embedded (simple): Custom init/final XOR that doesn't match standard
+    /// Both host and embedded use crcxx CRC_32_BZIP2 for consistent results.
     ///
-    /// This test documents current host behavior for regression testing until fixed.
+    /// This test documents current host behavior for regression testing.
     #[test]
-    fn test_crc32c_algorithm_current_behavior() {
-        // Current host implementation values (crcxx CRC_32_ISCSI)
-        // These are CORRECT standard CRC32C values, but embedded doesn't match
+    fn test_crc32_bzip2_algorithm_current_behavior() {
+        // Current host implementation values (crcxx CRC_32_BZIP2)
+        // These are correct CRC32_BZIP2 values that match our embedded implementation
         let current_host_values = vec![
             (b"".as_slice(), 0x00000000u32),
-            (b"123456789".as_slice(), 0xE3069283u32),
-            (b"\x00".as_slice(), 0x527D5351u32),
-            (b"\xFF".as_slice(), 0xFF000000u32), // This should be 0xB798B438 for true CRC32C
+            (b"123456789".as_slice(), 0xFC891918u32),
+            (b"\x00".as_slice(), 0xB1F7404Bu32),
+            (b"\xFF".as_slice(), 0x000000FFu32),
         ];
 
         for (input, expected_current) in current_host_values {
             let result = Flasher::calculate_crc32_host(input);
             assert_eq!(
                 result, expected_current,
-                "Host CRC32C regression for input {:?}: got 0x{:08X}, expected 0x{:08X}",
-                input, result, expected_current
+                "Host CRC32_BZIP2 regression for input {input:?}: got 0x{result:08X}, expected 0x{expected_current:08X}"
             );
         }
     }
@@ -2467,8 +2418,7 @@ mod tests {
             // TODO: When fixed, host should match standard CRC32C
             assert_eq!(
                 host_result, standard_expected,
-                "Host CRC32C should match standard for input {:?}: got 0x{:08X}, expected 0x{:08X}",
-                input, host_result, standard_expected
+                "Host CRC32C should match standard for input {input:?}: got 0x{host_result:08X}, expected 0x{standard_expected:08X}"
             );
         }
     }
@@ -2537,9 +2487,7 @@ mod tests {
             let throughput_mbps = (size as f64) / duration.as_secs_f64() / 1_000_000.0;
             assert!(
                 throughput_mbps > 1.0,
-                "CRC32 too slow for {} bytes: {:.2} MB/s (minimum: 1.0 MB/s)",
-                size,
-                throughput_mbps
+                "CRC32 too slow for {size} bytes: {throughput_mbps:.2} MB/s (minimum: 1.0 MB/s)"
             );
         }
     }
@@ -2547,7 +2495,7 @@ mod tests {
     /// Deep analysis of CRC32C implementation to identify potential edge cases
     #[test]
     fn test_crc32c_deep_analysis() {
-        use crcxx::crc32::{catalog::*, Crc, LookupTable256};
+        use crcxx::crc32::catalog::*;
 
         println!("\n=== CRC_32_ISCSI Parameters Analysis ===");
         let crc_params = &CRC_32_ISCSI;
@@ -2649,8 +2597,6 @@ mod tests {
 
     #[test]
     fn test_crc32c_extended_analysis() {
-        use crcxx::crc32::{catalog::*, Crc, LookupTable256};
-
         // Test with repetitive patterns that could expose algorithm differences
         println!("\n=== Extended CRC32C Analysis ===");
 

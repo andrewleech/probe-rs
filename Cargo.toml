@@ -22,7 +22,7 @@ members = [
     "probe-rs-mi",
     "probe-rs-debug",
 ]
-exclude = ["probe-rs/tests/gpio-hal-blinky"]
+exclude = ["probe-rs/tests/gpio-hal-blinky", "crc32_algorithms"]
 
 [workspace.dependencies]
 probe-rs = { path = "probe-rs", version = "0.29.0" }

@@ -91,7 +91,11 @@ impl FlashRequest {
         options.preverify = self.options.preverify;
         options.verify = self.options.verify;
         options.disable_double_buffering = self.options.disable_double_buffering;
-        tracing::debug!("RPC Flash: preverify={}, verify={}", self.options.preverify, self.options.verify);
+        tracing::debug!(
+            "RPC Flash: preverify={}, verify={}",
+            self.options.preverify,
+            self.options.verify
+        );
 
         options
     }

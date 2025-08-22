@@ -37,7 +37,7 @@ docsplay.workspace = true
 thiserror.workspace = true
 probe-rs-target.workspace = true
 crcxx = "0.3"
-probe-rs-crc32-builder = { path = "../crc32_algorithms" }
+probe-rs-crc32-builder = { path = "../crc32_algorithms", default-features = false }
 
 bincode = { version = "2", features = ["serde"], optional = true }
 bitfield = "0.19.0"

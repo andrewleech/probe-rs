@@ -44,7 +44,7 @@ pub fn run_flash_download(
     } else {
         Some(CliProgressBars::new())
     };
-    
+
     let has_progress_bars = pb.is_some();
 
     options.progress = Some(FlashProgress::new(move |event| {

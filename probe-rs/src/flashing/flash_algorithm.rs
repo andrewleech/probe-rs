@@ -1,6 +1,6 @@
-use super::{FlashError, crc_metadata::CrcBinaryMetadata, constants::*};
+use super::{FlashError, constants::*, crc_metadata::CrcBinaryMetadata};
 use crate::{
-    Target, Architecture,
+    Architecture, Target,
     architecture::{arm, riscv},
 };
 use probe_rs_target::{
@@ -12,19 +12,19 @@ use std::mem::size_of_val;
 /// Cortex-M core type for optimal CRC32 algorithm selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CortexCoreType {
-    M0,        // Cortex-M0 (ARMv6-M)
-    M0Plus,    // Cortex-M0+ (ARMv6-M)
-    M3,        // Cortex-M3 (ARMv7-M)
-    M4,        // Cortex-M4 (ARMv7E-M)
-    M7,        // Cortex-M7 (ARMv7E-M with advanced features)
-    M33,       // Cortex-M33 (ARMv8-M Mainline)
+    M0,     // Cortex-M0 (ARMv6-M)
+    M0Plus, // Cortex-M0+ (ARMv6-M)
+    M3,     // Cortex-M3 (ARMv7-M)
+    M4,     // Cortex-M4 (ARMv7E-M)
+    M7,     // Cortex-M7 (ARMv7E-M with advanced features)
+    M33,    // Cortex-M33 (ARMv8-M Mainline)
 }
 
 /// RISC-V core type for optimal CRC32 algorithm selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RiscvCoreType {
-    RV32I,     // Base integer instruction set
-    RV32IMC,   // Integer + Multiply + Compressed extensions
+    RV32I,   // Base integer instruction set
+    RV32IMC, // Integer + Multiply + Compressed extensions
 }
 
 /// A flash algorithm, which has been assembled for a specific
@@ -90,9 +90,6 @@ pub struct FlashAlgorithm {
     /// The encoding format accepted by the flash algorithm.
     pub transfer_encoding: TransferEncoding,
 
-    /// CRC32 binary data for separate RAM allocation. Optional.
-    /// Stored as (binary_data, target_ram_address, size) for loading after Init().
-    pub crc32_binary: Option<(Vec<u8>, u64, u64)>, // (binary, address, size)
 }
 
 impl FlashAlgorithm {
@@ -317,31 +314,92 @@ impl FlashAlgorithm {
             },
         );
 
-        // Prepare CRC32 binary for separate RAM allocation (not integrated into instructions)
-        let crc32_binary_for_allocation = if raw.pc_crc32.is_none() && target.architecture() == Architecture::Arm {
+        // Prepare instructions: combine flash algorithm + CRC32 binary if needed
+        let (instructions, crc32_offset_in_instructions) = if raw.pc_crc32.is_none() 
+            && (target.architecture() == Architecture::Arm || target.architecture() == Architecture::Riscv) {
+            // Load CRC32 binary for integration into instructions
             match Self::load_crc32_binary_for_target(target) {
                 Ok(crc32_blob) => {
-                    tracing::info!("Prepared CRC32 binary ({} bytes) for separate RAM allocation", 
-                        crc32_blob.len());
-                    Some(crc32_blob)
+                    tracing::info!(
+                        "Integrating CRC32 binary ({} bytes) into flash algorithm instructions",
+                        crc32_blob.len()
+                    );
+
+                    // Build base instructions (header + flash algorithm)
+                    let mut base_instructions: Vec<u32> = header
+                        .iter()
+                        .copied()
+                        .chain(
+                            assembled_instructions.map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
+                        )
+                        .chain(last_elem)
+                        .collect();
+
+                    // Calculate CRC32 offset from code start (excluding header)
+                    let header_size_words = header.len();
+                    let flash_algo_size_words = base_instructions.len() - header_size_words;
+                    let crc32_offset_from_code_start = flash_algo_size_words * 4;
+
+                    // Convert CRC32 binary to u32 instructions and append
+                    let crc32_words: Vec<u32> = crc32_blob
+                        .chunks_exact(4)
+                        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+                        .collect();
+                    
+                    // Handle any remaining bytes in CRC32 binary
+                    let remainder = crc32_blob.len() % 4;
+                    let final_crc32_word = if remainder > 0 {
+                        let start_idx = crc32_blob.len() - remainder;
+                        let mut bytes = [0u8; 4];
+                        bytes[..remainder].copy_from_slice(&crc32_blob[start_idx..]);
+                        Some(u32::from_le_bytes(bytes))
+                    } else {
+                        None
+                    };
+
+                    let crc32_word_count = crc32_words.len();
+                    let final_word_count = final_crc32_word.is_some() as usize;
+                    
+                    base_instructions.extend(crc32_words);
+                    if let Some(word) = final_crc32_word {
+                        base_instructions.push(word);
+                    }
+
+                    tracing::debug!(
+                        "Combined binary: {} flash algorithm instructions + {} CRC32 instructions (total: {})",
+                        base_instructions.len() - crc32_word_count - final_word_count,
+                        crc32_word_count + final_word_count,
+                        base_instructions.len()
+                    );
+
+                    (base_instructions, Some(crc32_offset_from_code_start as u64))
                 }
                 Err(e) => {
-                    tracing::warn!("Could not load CRC32 binary for allocation: {}", e);
-                    None
+                    tracing::warn!("Could not load CRC32 binary for integration: {}", e);
+                    // Fall back to base instructions without CRC32
+                    let base_instructions: Vec<u32> = header
+                        .iter()
+                        .copied()
+                        .chain(
+                            assembled_instructions.map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
+                        )
+                        .chain(last_elem)
+                        .collect();
+                    (base_instructions, None)
                 }
             }
         } else {
-            None
+            // No CRC32 integration needed - use original logic
+            let base_instructions: Vec<u32> = header
+                .iter()
+                .copied()
+                .chain(
+                    assembled_instructions.map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
+                )
+                .chain(last_elem)
+                .collect();
+            (base_instructions, None)
         };
-
-        let instructions: Vec<u32> = header
-            .iter()
-            .copied()
-            .chain(
-                assembled_instructions.map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
-            )
-            .chain(last_elem)
-            .collect();
 
         let header_size = size_of_val(header) as u64;
 
@@ -413,11 +471,15 @@ impl FlashAlgorithm {
 
         // To determine the stack bottom, we need to know if the data is double buffered.
         // Also calculate space for persistent buffer for incremental flash optimization.
-        let max_sector_size = raw.flash_properties.sectors.iter()
+        let max_sector_size = raw
+            .flash_properties
+            .sectors
+            .iter()
             .map(|s| s.size)
-            .max().unwrap_or(DEFAULT_SECTOR_SIZE);
-        let persistent_buffer_size = max_sector_size as u64;
-        
+            .max()
+            .unwrap_or(DEFAULT_SECTOR_SIZE);
+        let persistent_buffer_size = max_sector_size;
+
         let double_buffering = if ram_for_data >= 2 * buffer_page_size + persistent_buffer_size {
             // The data may be double buffered AND we have space for persistent buffer
             // TODO: maybe allow disabling in the target description?
@@ -465,8 +527,13 @@ impl FlashAlgorithm {
                 // The data and the stack are in the same region. There is not enough space
                 // for the stack below the data. Place the stack after the data (and persistent buffer).
                 let page_count = if double_buffering { 2 } else { 1 };
-                let persistent_size = if has_persistent_buffer { persistent_buffer_size } else { 0 };
-                (data_load_addr + page_count * buffer_page_size + persistent_size).next_multiple_of(stack_align)
+                let persistent_size = if has_persistent_buffer {
+                    persistent_buffer_size
+                } else {
+                    0
+                };
+                (data_load_addr + page_count * buffer_page_size + persistent_size)
+                    .next_multiple_of(stack_align)
             };
 
         // Now we can place the stack.
@@ -494,42 +561,38 @@ impl FlashAlgorithm {
 
         let name = raw.name.clone();
 
-        // Allocate separate RAM region for CRC32 binary if available
-        let (crc32_binary, pc_crc32) = if let Some(crc32_blob) = crc32_binary_for_allocation {
-            // Try to allocate CRC32 after stack, with proper alignment
-            let crc32_size = crc32_blob.len() as u64;
-            let crc32_align = 4u64; // 4-byte alignment for ARM instructions
-            let crc32_start = stack_top.next_multiple_of(crc32_align);
-            let crc32_end = crc32_start + crc32_size;
-            
-            if crc32_end <= ram_region.range.end {
-                // Get CRC32 function offset from metadata (working approach from work-rp-4)
-                let crc32_function_offset = match Self::get_crc32_function_offset_for_target(target, crc32_blob.len()) {
-                    Ok(offset) => {
-                        tracing::info!("CRC32 function offset from metadata: 0x{:02x}", offset);
-                        offset as u64
+        // Calculate pc_crc32 entry point
+        let pc_crc32 = if let Some(crc32_offset_bytes) = crc32_offset_in_instructions {
+            // CRC32 was integrated into instructions - get function offset from metadata
+            match Self::load_crc32_binary_for_target(target) {
+                Ok(crc32_blob) => {
+                    match Self::get_crc32_function_offset_for_target(target, crc32_blob.len()) {
+                        Ok(function_offset) => {
+                            let crc32_entry_point = code_start + crc32_offset_bytes + function_offset as u64;
+                            tracing::info!(
+                                "Integrated CRC32 entry point: {:#010x} (code_start: {:#010x} + crc32_offset: {:#010x} + function_offset: {:#010x})",
+                                crc32_entry_point, code_start, crc32_offset_bytes, function_offset
+                            );
+                            Some(crc32_entry_point)
+                        }
+                        Err(e) => {
+                            tracing::warn!("Could not get CRC32 function offset: {}, assuming function starts at CRC32 binary start", e);
+                            let crc32_entry_point = code_start + crc32_offset_bytes;
+                            Some(crc32_entry_point)
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("Could not load CRC32 metadata offset: {}, assuming offset 0", e);
-                        0u64
-                    }
-                };
-                
-                // CRC32 fits in RAM after stack
-                let crc32_entry_point = crc32_start + crc32_function_offset;
-                tracing::info!("Allocated CRC32 binary at {:#010x} ({} bytes), entry point: {:#010x}", 
-                    crc32_start, crc32_size, crc32_entry_point);
-                let crc32_info = (crc32_blob, crc32_start, crc32_size);
-                (Some(crc32_info), Some(crc32_entry_point))
-            } else {
-                // Not enough RAM for CRC32 allocation
-                tracing::warn!("Insufficient RAM for CRC32 allocation: need {} bytes at {:#010x}, RAM ends at {:#010x}", 
-                    crc32_size, crc32_start, ram_region.range.end);
-                (None, None)
+                }
+                Err(e) => {
+                    tracing::warn!("Could not reload CRC32 binary for offset calculation: {}", e);
+                    None
+                }
             }
+        } else if let Some(raw_offset) = raw.pc_crc32 {
+            // Use existing pc_crc32 from raw flash algorithm
+            Some(code_start + raw_offset)
         } else {
-            // No CRC32 binary or use existing pc_crc32 from raw algorithm
-            (None, raw.pc_crc32.map(|v| code_start + v))
+            // No CRC32 support
+            None
         };
 
         Ok(FlashAlgorithm {
@@ -555,7 +618,6 @@ impl FlashAlgorithm {
             rtt_control_block: raw.rtt_location,
             flash_properties: raw.flash_properties.clone(),
             transfer_encoding: raw.transfer_encoding.unwrap_or_default(),
-            crc32_binary,
         })
     }
 
@@ -631,6 +693,133 @@ fn is_ram_suitable_for_data(ram: &RamRegion, load_address: u64) -> bool {
     // be accessible from the core we're going to run the
     // algorithm on.
     ram.range.contains(&load_address)
+}
+
+impl FlashAlgorithm {
+    /// Load CRC32 binary for the target architecture to integrate into flash algorithm
+    fn load_crc32_binary_for_target(target: &Target) -> Result<Vec<u8>, FlashError> {
+        let target_blob: &[u8] = match target.architecture() {
+            Architecture::Arm => {
+                // Use same target detection logic as existing CRC32 code
+                match Self::determine_cortex_core_type(target) {
+                    CortexCoreType::M0 | CortexCoreType::M0Plus => {
+                        // Use thumbv6m-none-eabi for ARMv6-M cores
+                        include_bytes!("../../../crc32_algorithms/thumbv6m-none-eabi.bin")
+                    }
+                    CortexCoreType::M3
+                    | CortexCoreType::M4
+                    | CortexCoreType::M7
+                    | CortexCoreType::M33 => {
+                        // Use thumbv6m-none-eabi for all ARM cores for now (universal compatibility)
+                        include_bytes!("../../../crc32_algorithms/thumbv6m-none-eabi.bin")
+                    }
+                }
+            }
+            Architecture::Riscv => {
+                match Self::determine_riscv_core_type(target) {
+                    RiscvCoreType::RV32IMC => {
+                        // Use RV32IMC for targets with compressed extension support
+                        include_bytes!("../../../crc32_algorithms/riscv32imc-unknown-none-elf.bin")
+                    }
+                    RiscvCoreType::RV32I => {
+                        // Use RV32I base for conservative compatibility
+                        include_bytes!("../../../crc32_algorithms/riscv32i-unknown-none-elf.bin")
+                    }
+                }
+            }
+            _ => {
+                return Err(FlashError::Core(crate::Error::Other(format!(
+                    "CRC32 integration not yet supported for {:?} targets",
+                    target.architecture()
+                ))));
+            }
+        };
+
+        tracing::debug!(
+            "Selected CRC32 binary for target {}: {} bytes",
+            target.name,
+            target_blob.len()
+        );
+
+        Ok(target_blob.to_vec())
+    }
+
+    /// Determine Cortex-M core type from target information
+    fn determine_cortex_core_type(target: &Target) -> CortexCoreType {
+        // Use target name patterns to determine core type
+        let target_name = target.name.to_lowercase();
+
+        if target_name.contains("rp2040") {
+            CortexCoreType::M0Plus
+        } else if target_name.contains("cortex-m0") || target_name.contains("m0") {
+            CortexCoreType::M0
+        } else if target_name.contains("cortex-m0+") || target_name.contains("m0+") {
+            CortexCoreType::M0Plus
+        } else if target_name.contains("cortex-m3") || target_name.contains("m3") {
+            CortexCoreType::M3
+        } else if target_name.contains("cortex-m4") || target_name.contains("m4") {
+            CortexCoreType::M4
+        } else if target_name.contains("cortex-m7") || target_name.contains("m7") {
+            CortexCoreType::M7
+        } else if target_name.contains("cortex-m33") || target_name.contains("m33") {
+            CortexCoreType::M33
+        } else {
+            // Default to M4 for unknown ARM targets
+            CortexCoreType::M4
+        }
+    }
+
+    /// Determine RISC-V core type from target information
+    fn determine_riscv_core_type(target: &Target) -> RiscvCoreType {
+        // Use target name patterns to determine core type and extensions
+        let target_name = target.name.to_lowercase();
+
+        if target_name.contains("esp32c") || target_name.contains("ch32v") {
+            // Most modern embedded RISC-V targets support compressed instructions
+            RiscvCoreType::RV32IMC
+        } else if target_name.contains("rv32i") {
+            // Explicit RV32I base instruction set
+            RiscvCoreType::RV32I
+        } else {
+            // Conservative default - use RV32I for maximum compatibility
+            RiscvCoreType::RV32I
+        }
+    }
+
+    /// Get CRC32 function offset from metadata for the target (from working work-rp-4 approach)
+    fn get_crc32_function_offset_for_target(
+        target: &Target,
+        binary_size: usize,
+    ) -> Result<u32, String> {
+        // Determine which target architecture this binary is for
+        let rust_target = match target.architecture() {
+            Architecture::Arm => match Self::determine_cortex_core_type(target) {
+                CortexCoreType::M0 | CortexCoreType::M0Plus => "thumbv6m-none-eabi",
+                CortexCoreType::M3 | CortexCoreType::M4 => "thumbv7em-none-eabi",
+                CortexCoreType::M7 | CortexCoreType::M33 => "thumbv7em-none-eabihf",
+            },
+            Architecture::Riscv => match Self::determine_riscv_core_type(target) {
+                RiscvCoreType::RV32IMC => "riscv32imc-unknown-none-elf",
+                RiscvCoreType::RV32I => "riscv32i-unknown-none-elf",
+            },
+            _ => return Err("Unsupported architecture for CRC32 metadata".into()),
+        };
+
+        // Load metadata for the detected target
+        let metadata = CrcBinaryMetadata::load_for_target(rust_target)?;
+
+        // Verify the binary size matches the metadata
+        if metadata.binary_size() as usize != binary_size {
+            return Err(format!(
+                "Binary size mismatch: expected {} bytes, got {} bytes",
+                metadata.binary_size(),
+                binary_size
+            ));
+        }
+
+        // Return the CRC32 function offset
+        metadata.crc32_offset()
+    }
 }
 
 #[cfg(test)]
@@ -804,126 +993,5 @@ mod test {
             },
         ];
         assert_eq!(&got, expected);
-    }
-}
-
-impl FlashAlgorithm {
-    /// Load CRC32 binary for the target architecture to integrate into flash algorithm
-    fn load_crc32_binary_for_target(target: &Target) -> Result<Vec<u8>, FlashError> {
-        let target_blob: &[u8] = match target.architecture() {
-            Architecture::Arm => {
-                // Use same target detection logic as existing CRC32 code
-                match Self::determine_cortex_core_type(target) {
-                    CortexCoreType::M0 | CortexCoreType::M0Plus => {
-                        // Use thumbv6m-none-eabi for ARMv6-M cores
-                        include_bytes!("../../../crc32_algorithms/thumbv6m-none-eabi.bin")
-                    },
-                    CortexCoreType::M3 | CortexCoreType::M4 | CortexCoreType::M7 | CortexCoreType::M33 => {
-                        // Use thumbv6m-none-eabi for all ARM cores for now (universal compatibility)
-                        include_bytes!("../../../crc32_algorithms/thumbv6m-none-eabi.bin")
-                    },
-                }
-            },
-            Architecture::Riscv => {
-                match Self::determine_riscv_core_type(target) {
-                    RiscvCoreType::RV32IMC => {
-                        // Use RV32IMC for targets with compressed extension support
-                        include_bytes!("../../../crc32_algorithms/riscv32imc-unknown-none-elf.bin")
-                    },
-                    RiscvCoreType::RV32I => {
-                        // Use RV32I base for conservative compatibility
-                        include_bytes!("../../../crc32_algorithms/riscv32i-unknown-none-elf.bin")
-                    },
-                }
-            },
-            _ => {
-                return Err(FlashError::Core(crate::Error::Other(
-                    format!("CRC32 integration not yet supported for {:?} targets", 
-                    target.architecture())
-                )));
-            }
-        };
-
-        tracing::debug!("Selected CRC32 binary for target {}: {} bytes", 
-            target.name, target_blob.len());
-
-        Ok(target_blob.to_vec())
-    }
-
-    /// Determine Cortex-M core type from target information
-    fn determine_cortex_core_type(target: &Target) -> CortexCoreType {
-        // Use target name patterns to determine core type
-        let target_name = target.name.to_lowercase();
-        
-        if target_name.contains("rp2040") {
-            CortexCoreType::M0Plus
-        } else if target_name.contains("cortex-m0") || target_name.contains("m0") {
-            CortexCoreType::M0
-        } else if target_name.contains("cortex-m0+") || target_name.contains("m0+") {
-            CortexCoreType::M0Plus  
-        } else if target_name.contains("cortex-m3") || target_name.contains("m3") {
-            CortexCoreType::M3
-        } else if target_name.contains("cortex-m4") || target_name.contains("m4") {
-            CortexCoreType::M4
-        } else if target_name.contains("cortex-m7") || target_name.contains("m7") {
-            CortexCoreType::M7
-        } else if target_name.contains("cortex-m33") || target_name.contains("m33") {
-            CortexCoreType::M33
-        } else {
-            // Default to M4 for unknown ARM targets
-            CortexCoreType::M4
-        }
-    }
-
-    /// Determine RISC-V core type from target information
-    fn determine_riscv_core_type(target: &Target) -> RiscvCoreType {
-        // Use target name patterns to determine core type and extensions
-        let target_name = target.name.to_lowercase();
-        
-        if target_name.contains("esp32c") || target_name.contains("ch32v") {
-            // Most modern embedded RISC-V targets support compressed instructions
-            RiscvCoreType::RV32IMC
-        } else if target_name.contains("rv32i") {
-            // Explicit RV32I base instruction set
-            RiscvCoreType::RV32I
-        } else {
-            // Conservative default - use RV32I for maximum compatibility
-            RiscvCoreType::RV32I
-        }
-    }
-
-    /// Get CRC32 function offset from metadata for the target (from working work-rp-4 approach)
-    fn get_crc32_function_offset_for_target(target: &Target, binary_size: usize) -> Result<u32, String> {
-        // Determine which target architecture this binary is for
-        let rust_target = match target.architecture() {
-            Architecture::Arm => {
-                match Self::determine_cortex_core_type(target) {
-                    CortexCoreType::M0 | CortexCoreType::M0Plus => "thumbv6m-none-eabi",
-                    CortexCoreType::M3 | CortexCoreType::M4 => "thumbv7em-none-eabi", 
-                    CortexCoreType::M7 | CortexCoreType::M33 => "thumbv7em-none-eabihf",
-                }
-            },
-            Architecture::Riscv => {
-                match Self::determine_riscv_core_type(target) {
-                    RiscvCoreType::RV32IMC => "riscv32imc-unknown-none-elf",
-                    RiscvCoreType::RV32I => "riscv32i-unknown-none-elf",
-                }
-            },
-            _ => return Err("Unsupported architecture for CRC32 metadata".into()),
-        };
-
-        // Load metadata for the detected target
-        let metadata = CrcBinaryMetadata::load_for_target(rust_target)?;
-        
-        // Verify the binary size matches the metadata
-        if metadata.binary_size() as usize != binary_size {
-            return Err(format!(
-                "Binary size mismatch: expected {} bytes, got {} bytes", 
-                metadata.binary_size(), binary_size
-            ));
-        }
-        
-        // Return the CRC32 function offset
-        metadata.crc32_offset()
     }
 }

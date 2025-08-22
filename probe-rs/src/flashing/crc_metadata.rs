@@ -53,11 +53,11 @@ impl CrcBinaryMetadata {
             "riscv32imc-unknown-none-elf" => {
                 include_str!("../../../crc32_algorithms/riscv32imc-unknown-none-elf.toml")
             }
-            _ => return Err(format!("No metadata available for target: {}", target)),
+            _ => return Err(format!("No metadata available for target: {target}")),
         };
 
         toml::from_str(toml_content)
-            .map_err(|e| format!("Failed to parse metadata for {}: {}", target, e))
+            .map_err(|e| format!("Failed to parse metadata for {target}: {e}"))
     }
 
     /// Get the CRC32 function offset as a u32
@@ -65,11 +65,7 @@ impl CrcBinaryMetadata {
         let offset_str = &self.binary.crc32_function_offset;
 
         // Handle both "0x12345678" and "12345678" formats
-        let offset_str = if offset_str.starts_with("0x") {
-            &offset_str[2..]
-        } else {
-            offset_str
-        };
+        let offset_str = offset_str.strip_prefix("0x").unwrap_or(offset_str);
 
         u32::from_str_radix(offset_str, 16).map_err(|e| {
             format!(
