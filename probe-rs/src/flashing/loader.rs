@@ -850,33 +850,34 @@ impl FlashLoader {
                 ))
             })?;
 
-            // Check if target needs additional init/uninit (only RP2040) BEFORE creating ActiveFlasher
-            // ESP32 and others already initialized via flasher.init() and calling init() again fails
+            // Check target architecture BEFORE creating ActiveFlasher
             let target_name = session.target().name.to_lowercase();
-            let needs_dedicated_init_uninit = target_name.contains("rp2040");
+            let is_rp2040 = target_name.contains("rp2040");
+            let is_esp32 = target_name.contains("esp32");
 
             // Create temporary ActiveFlasher in Erase mode (standard flasher)
             let (mut active_flasher, regions) = flasher.init::<Erase>(session, &progress, None)?;
 
-            // DEDICATED INIT/EXIT CYCLE FOR CRC32:
-
-            if needs_dedicated_init_uninit {
-                // RP2040-specific: Additional init/uninit for SSI restoration
-                // 1. Call init() to set up proper core state and load CRC32
+            // Target-specific CRC32 initialization:
+            if is_rp2040 {
+                // RP2040: Requires init→uninit cycle to restore SSI registers for XIP access
                 tracing::debug!("🔧 RP2040: Dedicated init for CRC32 (SSI restoration)");
                 active_flasher.init(None)?;
 
-                // 2. Call uninit() to restore XIP for memory-mapped flash reads
                 tracing::debug!("🔧 RP2040: Dedicated uninit for CRC32 (XIP enable)");
                 active_flasher.uninit()?;
+            } else if is_esp32 {
+                // ESP32: Skip uninit() entirely - use debugger reads instead of CPU XIP
+                // ESP32 doesn't have init/uninit like ARM CMSIS, it uses bootloader mode
+                tracing::info!("🔧 ESP32: Skipping uninit - will use debugger reads for CRC32");
+                // Flash is accessible via debugger without uninit()
             } else {
-                // ESP32 and others: Already initialized via flasher.init(), skip additional init/uninit
-                tracing::debug!("🔧 {}: Flash algorithm already initialized, uninit for XIP", target_name);
-                // Just uninit to enable XIP for CRC32 reads
+                // Other targets: Attempt uninit for XIP (if supported)
+                tracing::debug!("🔧 {}: Attempting uninit for XIP-based CRC32 reads", target_name);
                 active_flasher.uninit()?;
             }
 
-            // 3. Perform CRC32 verification with proper core state + XIP enabled
+            // 3. Perform CRC32 verification (RP2040 uses XIP, ESP32 uses debugger reads)
             active_flasher.verify_with_crc32_preinit(regions)?
         };
 
@@ -940,6 +941,43 @@ impl FlashLoader {
             .clone()
             .unwrap_or_else(FlashProgress::empty);
 
+        // Check if target requires contiguous region operations (ESP32 family)
+        let target_name = session.target().name.to_lowercase();
+        let use_contiguous_regions = target_name.contains("esp32");
+
+        if use_contiguous_regions {
+            tracing::info!("🔧 ESP32 detected: Using contiguous region mode for selective programming");
+        }
+
+        // Group sectors into contiguous regions for ESP32 compatibility
+        let regions = if use_contiguous_regions {
+            let grouped = super::flasher::group_into_contiguous_regions(&verification_result.sectors_needing_update);
+            tracing::info!(
+                "📦 Grouped {} sectors into {} contiguous region(s)",
+                verification_result.sectors_needing_update.len(),
+                grouped.len()
+            );
+            for (i, region) in grouped.iter().enumerate() {
+                tracing::debug!(
+                    "  Region {}: {:#010X}..{:#010X} ({} bytes, {} sectors)",
+                    i + 1,
+                    region.start_address,
+                    region.end_address,
+                    region.size(),
+                    region.sector_count()
+                );
+            }
+            grouped
+        } else {
+            // For non-ESP32 targets, treat each sector as an individual region
+            // This preserves the original scattered sector programming behavior
+            verification_result
+                .sectors_needing_update
+                .iter()
+                .map(|s| super::flasher::ContiguousRegion::new(s.clone()))
+                .collect()
+        };
+
         // Calculate total size for progress bars (only sectors being updated)
         let update_size: u64 = verification_result
             .sectors_needing_update
@@ -948,89 +986,130 @@ impl FlashLoader {
             .sum();
 
         tracing::info!(
-            "📦 Selective update size: {} bytes across {} sectors",
+            "📦 Selective update: {} bytes across {} region(s)",
             update_size,
-            verification_result.sectors_needing_update.len()
+            regions.len()
         );
 
         // Fill stage (already done)
         progress.started_filling();
         progress.finished_filling();
 
-        // Erase only sectors that need updates
+        // Erase regions that need updates
         progress.started_erasing();
         progress.add_progress_bar(ProgressOperation::Erase, Some(update_size));
 
+        // ESP32 detection for init/uninit handling
+        let is_esp32 = use_contiguous_regions; // Already checked above
+
         for flasher in algos.iter_mut() {
             tracing::debug!(
-                "Erasing changed sectors for algo: {}",
+                "Erasing {} region(s) for algo: {}",
+                regions.len(),
                 flasher.flash_algorithm.name
             );
             let (mut active_flasher, _regions) = flasher.init::<Erase>(session, &progress, None)?;
 
             // Initialize the flash algorithm
+            // ESP32 needs init() for each phase, just not multiple inits within same phase
             active_flasher.init(None)?;
 
-            // Erase each sector that needs updating
-            for sector in &verification_result.sectors_needing_update {
-                active_flasher.erase_sector(sector)?;
+            // Erase each contiguous region
+            for (region_idx, region) in regions.iter().enumerate() {
+                tracing::debug!(
+                    "Erasing region {}/{}: {:#010X}..{:#010X} ({} bytes, {} sectors)",
+                    region_idx + 1,
+                    regions.len(),
+                    region.start_address,
+                    region.end_address,
+                    region.size(),
+                    region.sector_count()
+                );
+
+                // Erase all sectors in this contiguous region
+                for sector in &region.sectors {
+                    active_flasher.erase_sector(sector)?;
+                }
             }
 
-            // Uninitialize
-            active_flasher.uninit()?;
+            // Uninitialize (skip for ESP32 - doesn't support uninit)
+            if !is_esp32 {
+                active_flasher.uninit()?;
+            } else {
+                tracing::debug!("🔧 ESP32: Skipping uninit() - bootloader mode doesn't need it");
+            }
         }
         progress.finished_erasing();
 
-        // Program only sectors that need updates
+        // Program regions that need updates
         progress.started_programming();
         progress.add_progress_bar(ProgressOperation::Program, Some(update_size));
 
         for mut flasher in algos {
             tracing::debug!(
-                "Programming changed sectors for algo: {}",
+                "Programming {} region(s) for algo: {}",
+                regions.len(),
                 flasher.flash_algorithm.name
             );
 
             // Get page size from flash algorithm before creating active flasher
             let page_size = flasher.flash_algorithm.flash_properties.page_size as usize;
 
-            let (mut active_flasher, regions) =
+            let (mut active_flasher, flash_regions) =
                 flasher.init::<Program>(session, &progress, None)?;
 
             // Initialize for programming
+            // ESP32 needs init() for each phase, just not multiple inits within same phase
             active_flasher.init(None)?;
 
-            // Program each changed sector
-            for sector in &verification_result.sectors_needing_update {
-                // Get the data for this sector from the appropriate region
-                for region in regions.iter() {
-                    let layout = region.flash_layout();
-                    // Check if this sector belongs to this region
-                    if layout
-                        .sectors()
-                        .iter()
-                        .any(|s| s.address() == sector.address())
-                    {
-                        let sector_data = super::flasher::Flasher::get_sector_data(region, sector);
+            // Program each contiguous region
+            for (region_idx, region) in regions.iter().enumerate() {
+                tracing::debug!(
+                    "Programming region {}/{}: {:#010X}..{:#010X} ({} bytes, {} sectors)",
+                    region_idx + 1,
+                    regions.len(),
+                    region.start_address,
+                    region.end_address,
+                    region.size(),
+                    region.sector_count()
+                );
 
-                        // Break sector into pages for programming
-                        let sector_address = sector.address();
+                // Program all sectors in this contiguous region
+                for sector in &region.sectors {
+                    // Get the data for this sector from the appropriate flash region
+                    for flash_region in flash_regions.iter() {
+                        let layout = flash_region.flash_layout();
+                        // Check if this sector belongs to this flash region
+                        if layout
+                            .sectors()
+                            .iter()
+                            .any(|s| s.address() == sector.address())
+                        {
+                            let sector_data = super::flasher::Flasher::get_sector_data(flash_region, sector);
 
-                        for (offset, chunk) in sector_data.chunks(page_size).enumerate() {
-                            let page_address = sector_address + (offset * page_size) as u64;
-                            let page = super::builder::FlashPage {
-                                address: page_address,
-                                data: chunk.to_vec(),
-                            };
-                            active_flasher.program_page(&page)?;
+                            // Break sector into pages for programming
+                            let sector_address = sector.address();
+
+                            for (offset, chunk) in sector_data.chunks(page_size).enumerate() {
+                                let page_address = sector_address + (offset * page_size) as u64;
+                                let page = super::builder::FlashPage {
+                                    address: page_address,
+                                    data: chunk.to_vec(),
+                                };
+                                active_flasher.program_page(&page)?;
+                            }
+                            break; // Found the flash region for this sector
                         }
-                        break; // Found the region for this sector
                     }
                 }
             }
 
-            // Uninitialize
-            active_flasher.uninit()?;
+            // Uninitialize (skip for ESP32 - doesn't support uninit)
+            if !is_esp32 {
+                active_flasher.uninit()?;
+            } else {
+                tracing::debug!("🔧 ESP32: Skipping uninit() - bootloader mode doesn't need it");
+            }
         }
         progress.finished_programming();
 
@@ -1049,8 +1128,9 @@ impl FlashLoader {
         }
 
         tracing::info!(
-            "✅ Selective programming complete: {} sectors updated successfully",
-            verification_result.sectors_needing_update.len()
+            "✅ Selective programming complete: {} sectors ({} regions) updated successfully",
+            verification_result.sectors_needing_update.len(),
+            regions.len()
         );
 
         Ok(())

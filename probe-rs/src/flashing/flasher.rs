@@ -43,6 +43,79 @@ impl VerificationResult {
     }
 }
 
+/// Represents a contiguous region of flash sectors for bulk operations
+/// Used to group adjacent sectors together for ESP32 flash algorithms that
+/// don't support arbitrary scattered sector operations
+#[derive(Debug, Clone)]
+pub struct ContiguousRegion {
+    /// Starting address of the region
+    pub start_address: u64,
+    /// Ending address of the region (exclusive)
+    pub end_address: u64,
+    /// Individual sectors within this region
+    pub sectors: Vec<FlashSector>,
+}
+
+impl ContiguousRegion {
+    /// Create a new region from a single sector
+    pub fn new(sector: FlashSector) -> Self {
+        let end = sector.address() + sector.size();
+        Self {
+            start_address: sector.address(),
+            end_address: end,
+            sectors: vec![sector],
+        }
+    }
+
+    /// Check if a sector is adjacent to this region (touches at the end boundary)
+    pub fn is_adjacent(&self, sector: &FlashSector) -> bool {
+        sector.address() == self.end_address
+    }
+
+    /// Merge an adjacent sector into this region
+    pub fn merge(&mut self, sector: FlashSector) {
+        self.end_address = sector.address() + sector.size();
+        self.sectors.push(sector);
+    }
+
+    /// Get total size of the region in bytes
+    pub fn size(&self) -> u64 {
+        self.end_address - self.start_address
+    }
+
+    /// Get the number of sectors in this region
+    pub fn sector_count(&self) -> usize {
+        self.sectors.len()
+    }
+}
+
+/// Group adjacent sectors into contiguous regions for bulk operations
+/// This is essential for ESP32 flash algorithms that require contiguous region operations
+/// rather than arbitrary scattered sector erase/program operations
+pub fn group_into_contiguous_regions(sectors: &[FlashSector]) -> Vec<ContiguousRegion> {
+    if sectors.is_empty() {
+        return Vec::new();
+    }
+
+    let mut regions = Vec::new();
+    let mut current_region = ContiguousRegion::new(sectors[0].clone());
+
+    for sector in &sectors[1..] {
+        if current_region.is_adjacent(sector) {
+            // Sector is adjacent, merge it into current region
+            current_region.merge(sector.clone());
+        } else {
+            // Sector is not adjacent, start a new region
+            regions.push(current_region);
+            current_region = ContiguousRegion::new(sector.clone());
+        }
+    }
+
+    // Don't forget the last region
+    regions.push(current_region);
+    regions
+}
+
 pub(super) trait Operation {
     const OPERATION: u32;
     const NAME: &'static str;
