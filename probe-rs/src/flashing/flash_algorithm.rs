@@ -315,7 +315,10 @@ impl FlashAlgorithm {
         );
 
         // Prepare instructions: combine flash algorithm + CRC32 binary if needed
-        let (instructions, crc32_offset_in_instructions) = if raw.pc_crc32.is_none() 
+        // Skip CRC32 integration for devices with insufficient RAM (<4KB)
+        let ram_size = ram_region.range.end - ram_region.range.start;
+        let (instructions, crc32_offset_in_instructions) = if raw.pc_crc32.is_none()
+            && ram_size >= 4096
             && (target.architecture() == Architecture::Arm || target.architecture() == Architecture::Riscv) {
             // Load CRC32 binary for integration into instructions
             match Self::load_crc32_binary_for_target(target) {
@@ -390,6 +393,9 @@ impl FlashAlgorithm {
             }
         } else {
             // No CRC32 integration needed - use original logic
+            if ram_size < 4096 {
+                tracing::debug!("Insufficient RAM for CRC32 integration ({} bytes available, 4096 required), skipping", ram_size);
+            }
             let base_instructions: Vec<u32> = header
                 .iter()
                 .copied()
@@ -587,12 +593,9 @@ impl FlashAlgorithm {
                     None
                 }
             }
-        } else if let Some(raw_offset) = raw.pc_crc32 {
-            // Use existing pc_crc32 from raw flash algorithm
-            Some(code_start + raw_offset)
         } else {
-            // No CRC32 support
-            None
+            // Use existing pc_crc32 from raw flash algorithm (if available)
+            raw.pc_crc32.map(|raw_offset| code_start + raw_offset)
         };
 
         Ok(FlashAlgorithm {
