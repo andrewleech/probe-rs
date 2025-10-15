@@ -850,17 +850,31 @@ impl FlashLoader {
                 ))
             })?;
 
+            // Check if target needs additional init/uninit (only RP2040) BEFORE creating ActiveFlasher
+            // ESP32 and others already initialized via flasher.init() and calling init() again fails
+            let target_name = session.target().name.to_lowercase();
+            let needs_dedicated_init_uninit = target_name.contains("rp2040");
+
             // Create temporary ActiveFlasher in Erase mode (standard flasher)
             let (mut active_flasher, regions) = flasher.init::<Erase>(session, &progress, None)?;
 
             // DEDICATED INIT/EXIT CYCLE FOR CRC32:
-            // 1. Call init() to set up proper core state and load CRC32
-            tracing::debug!("🔧 Dedicated init for CRC32: Setting up core state");
-            active_flasher.init(None)?;
 
-            // 2. Call uninit() to restore XIP for memory-mapped flash reads
-            tracing::debug!("🔧 Dedicated uninit for CRC32: Restoring XIP for flash reads");
-            active_flasher.uninit()?;
+            if needs_dedicated_init_uninit {
+                // RP2040-specific: Additional init/uninit for SSI restoration
+                // 1. Call init() to set up proper core state and load CRC32
+                tracing::debug!("🔧 RP2040: Dedicated init for CRC32 (SSI restoration)");
+                active_flasher.init(None)?;
+
+                // 2. Call uninit() to restore XIP for memory-mapped flash reads
+                tracing::debug!("🔧 RP2040: Dedicated uninit for CRC32 (XIP enable)");
+                active_flasher.uninit()?;
+            } else {
+                // ESP32 and others: Already initialized via flasher.init(), skip additional init/uninit
+                tracing::debug!("🔧 {}: Flash algorithm already initialized, uninit for XIP", target_name);
+                // Just uninit to enable XIP for CRC32 reads
+                active_flasher.uninit()?;
+            }
 
             // 3. Perform CRC32 verification with proper core state + XIP enabled
             active_flasher.verify_with_crc32_preinit(regions)?
