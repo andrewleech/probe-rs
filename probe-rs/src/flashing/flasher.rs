@@ -363,20 +363,30 @@ impl Flasher {
         progress: &'s FlashProgress<'p>,
         clock: Option<u32>,
     ) -> Result<(ActiveFlasher<'s, 'p, O>, &'s mut [LoadedRegion]), FlashError> {
-        // First, do standard initialization to restore SSI via Init()
-        {
-            let mut core = session.core(self.core_index).map_err(FlashError::Core)?;
-            let instruction_set = core.instruction_set().map_err(FlashError::Core)?;
-            let mut flasher = ActiveFlasher::<O> {
-                core,
-                instruction_set,
-                rtt: None,
-                progress,
-                flash_algorithm: &self.flash_algorithm,
-                _operation: PhantomData,
-            };
-            flasher.init(clock)?;
-            flasher.uninit()?; // Clean shutdown to release core
+        // Check if target needs init→uninit cycle (only needed for RP2040 to restore SSI)
+        // ESP32 and other targets cannot handle uninit without flash operations
+        let target_name = session.target().name.to_lowercase();
+        let needs_init_uninit_cycle = target_name.contains("rp2040");
+
+        if needs_init_uninit_cycle {
+            // First, do standard initialization to restore SSI via Init() (RP2040-specific)
+            {
+                let mut core = session.core(self.core_index).map_err(FlashError::Core)?;
+                let instruction_set = core.instruction_set().map_err(FlashError::Core)?;
+                let mut flasher = ActiveFlasher::<O> {
+                    core,
+                    instruction_set,
+                    rtt: None,
+                    progress,
+                    flash_algorithm: &self.flash_algorithm,
+                    _operation: PhantomData,
+                };
+                flasher.init(clock)?;
+                flasher.uninit()?; // Clean shutdown to release core
+                tracing::debug!("RP2040: Completed init→uninit cycle to restore SSI");
+            }
+        } else {
+            tracing::debug!("Target {} does not require init→uninit cycle, skipping", target_name);
         }
 
         // CRC32 is now loaded during flash algorithm loading (consolidated approach)
